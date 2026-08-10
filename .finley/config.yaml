@@ -26,9 +26,9 @@
 quality:
   # 前端 / Node 侧命令
   frontend:
-    lint: "<占位: 前端 lint 命令，如 npm run lint>"
-    typecheck: "<占位: 前端类型检查命令，如 npm run typecheck>"
-    test: "<占位: 前端测试命令，如 npm test>"
+    lint: "bash -n scripts/start-tidb.sh scripts/start-backend.sh scripts/start-frontend.sh"
+    typecheck: "cd frontend && npm run build"
+    test: "cd backend && .venv/bin/python -m unittest discover -s tests"
   # 后端 / Python 侧命令
   backend:
     lint: "<占位: 后端 lint 命令，如 ruff check .>"

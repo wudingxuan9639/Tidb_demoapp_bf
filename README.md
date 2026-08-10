@@ -14,6 +14,24 @@
 | TiDB SQL | `127.0.0.1:4000` |
 | TiDB Dashboard | `http://127.0.0.1:2379/dashboard` |
 
+## 下次启动（推荐）
+
+首次完成下面的安装配置后，以后每次开发只需打开三个终端，并在项目根目录分别运行：
+
+```bash
+bash scripts/start-tidb.sh
+```
+
+```bash
+bash scripts/start-backend.sh
+```
+
+```bash
+bash scripts/start-frontend.sh
+```
+
+按 TiDB、后端、前端的顺序启动。三个命令都需要保持运行；停止时在对应终端按 `Ctrl+C`。脚本固定使用 TiDB `v8.5.7` 与 `demo-app` 标签，后端会使用 `backend/.venv`，前端仅在 `node_modules` 不存在时执行 `npm ci`。
+
 ## 1. 启动 TiDB（Mac）
 
 TiDB 本地开发会运行三个进程：TiDB（SQL 入口）、PD（集群协调）和 TiKV（物理数据存储）。TiUP 会自动下载和启动它们；它不是 Docker，但实现的集群组成相同。
@@ -29,7 +47,7 @@ tiup --version
 在一个单独的终端启动本地单节点集群：
 
 ```bash
-tiup playground
+tiup playground v8.5.7 --tag demo-app
 ```
 
 保持此终端运行。首次启动会下载组件，SQL 服务就绪后可在另一个终端检查：
