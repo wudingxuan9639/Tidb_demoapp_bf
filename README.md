@@ -8,7 +8,8 @@
 
 | 服务 | 地址 |
 | --- | --- |
-| Vue 前端 | `http://127.0.0.1:8517` |
+| B 端 Vue 前端 | `http://127.0.0.1:8517` |
+| C 端 Vue 数据库浏览 | `http://127.0.0.1:8518/c.html` |
 | FastAPI 后端 | `http://127.0.0.1:8800` |
 | FastAPI 接口文档 | `http://127.0.0.1:8800/docs` |
 | TiDB SQL | `127.0.0.1:4000` |
@@ -16,7 +17,7 @@
 
 ## 下次启动（推荐）
 
-首次完成下面的安装配置后，以后每次开发只需打开三个终端，并在项目根目录分别运行：
+首次完成下面的安装配置后，B 端开发需要打开三个终端；需要 C 端数据库浏览时再打开第四个终端。所有命令均在项目根目录运行：
 
 ```bash
 bash scripts/start-tidb.sh
@@ -30,7 +31,11 @@ bash scripts/start-backend.sh
 bash scripts/start-frontend.sh
 ```
 
-按 TiDB、后端、前端的顺序启动。三个命令都需要保持运行；停止时在对应终端按 `Ctrl+C`。脚本默认使用 TiDB `v8.5.7` 与 `demo-app` 标签，后端会使用 `backend/.venv`，前端仅在 `node_modules` 不存在时执行 `npm ci`。
+```bash
+bash scripts/start-frontend-c.sh
+```
+
+按 TiDB、后端、B 端前端、C 端前端的顺序启动。四个命令都需要保持运行；停止时在对应终端按 `Ctrl+C`。C 端仅做数据库浏览，默认访问 `http://127.0.0.1:8518/c.html`。脚本默认使用 TiDB `v8.5.7` 与 `demo-app` 标签，后端会使用 `backend/.venv`，前端仅在 `node_modules` 不存在时执行 `npm ci`。
 
 ## 1. 启动 TiDB（Mac）
 
@@ -111,7 +116,17 @@ npm install
 npm run dev
 ```
 
-访问 `http://127.0.0.1:8517`。
+访问 B 端：`http://127.0.0.1:8517`。
+
+## 4. 启动 C 端数据库浏览
+
+新开一个终端，在项目根目录运行：
+
+```bash
+bash scripts/start-frontend-c.sh
+```
+
+访问 `http://127.0.0.1:8518/c.html`。C 端通过同一个 FastAPI 服务读取当前 TiDB 连接可见的业务数据库、所选数据库下的数据表，以及所选表的前 100 行。TiDB/MySQL 系统数据库会在后端过滤；由于 B、C 共用同一个后端连接字符串，C 会将 B 写入的默认数据库排在首位并在打开时选中。C 端为只读页面；B 端导入或删除后，C 端会通过 SSE 自动刷新当前查询。
 
 ## 实时更新与扩展边界
 
@@ -126,14 +141,20 @@ npm run dev
 | `GET` | `/api/events` | SSE 数据变更通知 |
 | `GET` | `/api/order-import/template` | 下载固定订单导入模板 |
 | `POST` | `/api/order-import` | 上传 `.xlsx` / `.xls` 并导入订单 |
+| `GET` | `/api/databases` | 获取当前 TiDB 连接可见的数据库 |
+| `GET` | `/api/databases/{database}/tables` | 获取指定数据库的数据表 |
+| `POST` | `/api/databases/{database}/tables` | 在业务数据库中创建固定结构的订单导入表 |
+| `GET` | `/api/databases/{database}/tables/{table}/rows` | 获取指定数据表的前 100 行 |
 
 ## Excel 订单导入
 
-页面的“下载模板”会生成一个固定规则的 Excel 文件。上传时，前四列的第一行表头和顺序必须完全为：`订单ID`、`客户名称`、`订单金额`、`下单日期`。系统允许其后存在由 Excel/WPS 格式产生的空白列，但这些列的每个单元格都必须为空；额外列中出现任何数据时，会提示具体行和列。系统按固定映射写入前端选定的 `order_imports` 或 `order_import_archive` 表中的 `order_id`、`customer_name`、`amount`、`order_date` 字段。前端只展示这两个字段结构兼容的写入目标；后端也会再次校验，不能通过伪造请求写入其他表。
+页面的“下载模板”会生成一个固定规则的 Excel 文件。上传时，前四列的第一行表头和顺序必须完全为：`订单ID`、`客户名称`、`订单金额`、`下单日期`。系统允许其后存在由 Excel/WPS 格式产生的空白列，但这些列的每个单元格都必须为空；额外列中出现任何数据时，会提示具体行和列。
+
+B 端上传区域可选择业务数据库及其数据表。后端将表头映射到 `order_id`、`customer_name`、`amount`、`order_date` 后，先确认该表具有这四个字段，再写入选中的 `数据库.数据表`。所选数据库尚未有任何表时，B 端会提供新建表输入框；表名仅可使用字母、数字和下划线，且必须以字母或下划线开头。新建表采用固定订单导入结构，建成后可立即选中导入和查询。系统数据库不会显示在选择器中。
 
 校验规则：仅支持 `.xlsx` / `.xls`；单文件最大 5 MB；最多 500 条数据；不允许公式；订单 ID 仅允许字母、数字、下划线和连字符，且不可重复；客户名称最长 100 字；金额大于 0 且最多两位小数；日期必须是 Excel 日期或 `YYYY-MM-DD`。校验失败、数据库中订单 ID 重复或写库失败时，前端会显示具体原因；写入使用单个事务，失败时不会写入部分数据。
 
-“TiDB 数据表查询”区域通过 `GET /api/tables` 显示当前数据库所有表，并通过 `GET /api/tables/{table_name}/rows` 读取选中表的前 100 行。查询表名必须来自后端返回的实际表列表。
+“TiDB 数据表查询”区域通过 `GET /api/databases`、`GET /api/databases/{database}/tables` 和 `GET /api/databases/{database}/tables/{table}/rows` 依次选择业务数据库、数据表并读取选中表的前 100 行。查询的数据库和表名必须来自后端返回的实际列表。
 
 订单导入表和订单导入归档表支持在页面多选删除。后端通过 `DELETE /api/tables/{table_name}/rows` 接收主键 ID 列表，并且只允许删除 `order_imports`、`order_import_archive` 两张订单表的数据。
 

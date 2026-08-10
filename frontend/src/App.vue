@@ -1,15 +1,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from './api'
-import type { DatabaseTableRows, ImportResult, ImportTarget } from './types'
+import type { DatabaseTableRows, ImportResult } from './types'
 
 const fileInput = ref<HTMLInputElement>()
 const selectedFile = ref<File | null>(null)
 const importing = ref(false)
 const dragActive = ref(false)
 const importResult = ref<ImportResult | null>(null)
-const importTargets = ref<ImportTarget[]>([])
-const targetTable = ref('order_imports')
+const databases = ref<string[]>([])
+const targetDatabase = ref('')
+const targetTables = ref<string[]>([])
+const targetTable = ref('')
+const newTableName = ref('')
+const creatingTable = ref(false)
+const createTableError = ref('')
+const selectedDatabase = ref('')
 const databaseTables = ref<string[]>([])
 const selectedDatabaseTable = ref('')
 const databaseRows = ref<DatabaseTableRows | null>(null)
@@ -18,7 +24,10 @@ const databaseError = ref('')
 const selectedRowIds = ref<number[]>([])
 let events: EventSource | undefined
 
-const canDeleteRows = computed(() => importTargets.value.some((target) => target.name === selectedDatabaseTable.value))
+const canDeleteRows = computed(() => {
+  return selectedDatabase.value === databases.value[0]
+    && ['order_imports', 'order_import_archive'].includes(selectedDatabaseTable.value)
+})
 const allRowsSelected = computed(() => {
   const rows = databaseRows.value?.rows ?? []
   return rows.length > 0 && rows.every((row) => selectedRowIds.value.includes(Number(row.id)))
@@ -48,11 +57,11 @@ async function importFile() {
   importing.value = true
   importResult.value = null
   try {
-    importResult.value = await api.importOrders(selectedFile.value, targetTable.value)
+    importResult.value = await api.importOrders(selectedFile.value, targetDatabase.value, targetTable.value)
     if (importResult.value.status === 'success') {
-      await loadDatabaseMetadata()
+      selectedDatabase.value = targetDatabase.value
       selectedDatabaseTable.value = targetTable.value
-      await loadDatabaseRows()
+      await loadQueryTables()
     }
   } catch (reason) {
     importResult.value = {
@@ -61,23 +70,61 @@ async function importFile() {
       total_rows: 0,
       inserted_rows: 0,
       errors: [],
-      target_table: targetTable.value,
+      target_table: targetTable.value ? `${targetDatabase.value}.${targetTable.value}` : null,
     }
   } finally {
     importing.value = false
   }
 }
 
-async function loadDatabaseMetadata() {
+async function loadDatabases() {
   databaseError.value = ''
   try {
-    const [tables, targets] = await Promise.all([api.listDatabaseTables(), api.listImportTargets()])
-    databaseTables.value = tables
-    importTargets.value = targets
-    if (!targets.some((target) => target.name === targetTable.value)) targetTable.value = targets[0]?.name ?? ''
-    if (!selectedDatabaseTable.value && tables.length) selectedDatabaseTable.value = tables[0]
+    databases.value = await api.listDatabases()
+    if (!databases.value.includes(targetDatabase.value)) targetDatabase.value = databases.value[0] ?? ''
+    if (!databases.value.includes(selectedDatabase.value)) selectedDatabase.value = databases.value[0] ?? ''
   } catch (reason) {
+    databaseError.value = reason instanceof Error ? reason.message : '无法读取业务数据库列表'
+  }
+}
+
+async function loadTargetTables() {
+  if (!targetDatabase.value) {
+    targetTables.value = []
+    targetTable.value = ''
+    return
+  }
+  createTableError.value = ''
+  try {
+    targetTables.value = await api.listSchemaTables(targetDatabase.value)
+    if (!targetTables.value.includes(targetTable.value)) targetTable.value = targetTables.value[0] ?? ''
+  } catch (reason) {
+    targetTables.value = []
+    targetTable.value = ''
+    createTableError.value = reason instanceof Error ? reason.message : '无法读取写入目标表'
+  }
+}
+
+async function loadQueryTables() {
+  if (!selectedDatabase.value) {
+    databaseTables.value = []
+    selectedDatabaseTable.value = ''
+    databaseRows.value = null
+    return
+  }
+  databaseLoading.value = true
+  databaseError.value = ''
+  try {
+    databaseTables.value = await api.listSchemaTables(selectedDatabase.value)
+    if (!databaseTables.value.includes(selectedDatabaseTable.value)) selectedDatabaseTable.value = databaseTables.value[0] ?? ''
+    if (!selectedDatabaseTable.value) databaseRows.value = null
+  } catch (reason) {
+    databaseTables.value = []
+    selectedDatabaseTable.value = ''
+    databaseRows.value = null
     databaseError.value = reason instanceof Error ? reason.message : '无法读取数据库表列表'
+  } finally {
+    databaseLoading.value = false
   }
 }
 
@@ -87,11 +134,30 @@ async function loadDatabaseRows() {
   databaseError.value = ''
   selectedRowIds.value = []
   try {
-    databaseRows.value = await api.listTableRows(selectedDatabaseTable.value)
+    databaseRows.value = await api.listSchemaTableRows(selectedDatabase.value, selectedDatabaseTable.value)
   } catch (reason) {
     databaseError.value = reason instanceof Error ? reason.message : '无法读取数据表'
   } finally {
     databaseLoading.value = false
+  }
+}
+
+async function createTargetTable() {
+  if (!targetDatabase.value || !newTableName.value.trim()) return
+  creatingTable.value = true
+  createTableError.value = ''
+  try {
+    const result = await api.createOrderImportTable(targetDatabase.value, newTableName.value.trim())
+    newTableName.value = ''
+    await loadTargetTables()
+    targetTable.value = result.table
+    selectedDatabase.value = result.database
+    selectedDatabaseTable.value = result.table
+    await loadQueryTables()
+  } catch (reason) {
+    createTableError.value = reason instanceof Error ? reason.message : '新建数据表失败'
+  } finally {
+    creatingTable.value = false
   }
 }
 
@@ -132,12 +198,17 @@ function displayValue(value: unknown) {
   return typeof value === 'object' ? JSON.stringify(value) : String(value)
 }
 
+watch(targetDatabase, loadTargetTables)
+watch(selectedDatabase, loadQueryTables)
 watch(selectedDatabaseTable, loadDatabaseRows)
 
 onMounted(() => {
-  loadDatabaseMetadata()
+  loadDatabases()
   events = new EventSource(`${api.apiBase}/api/events`)
-  events.addEventListener('database_changed', loadDatabaseRows)
+  events.addEventListener('database_changed', async () => {
+    await Promise.all([loadTargetTables(), loadQueryTables()])
+    await loadDatabaseRows()
+  })
 })
 
 onBeforeUnmount(() => events?.close())
@@ -161,8 +232,16 @@ onBeforeUnmount(() => events?.close())
         <span>支持 .xlsx 和 .xls，单个文件不超过 5 MB，最多 500 条数据</span>
         <button type="button" @click="chooseFile">浏览本地文件</button>
       </div>
-      <div v-if="selectedFile" class="file-summary"><span>{{ selectedFile.name }}</span><span>{{ Math.ceil(selectedFile.size / 1024) }} KB</span><button type="button" class="secondary" :disabled="importing" @click="importFile">{{ importing ? '解析并写库中...' : '开始导入' }}</button></div>
-      <label class="target-select">写入目标表<select v-model="targetTable"><option v-for="target in importTargets" :key="target.name" :value="target.name">{{ target.label }}（{{ target.name }}）</option></select></label>
+      <div class="query-selects">
+        <label class="target-select">写入目标数据库<select v-model="targetDatabase"><option v-for="database in databases" :key="database" :value="database">{{ database }}</option></select></label>
+        <label class="target-select">写入目标表<select v-model="targetTable" :disabled="targetTables.length === 0"><option v-for="table in targetTables" :key="table" :value="table">{{ table }}</option></select></label>
+      </div>
+      <div v-if="targetDatabase && targetTables.length === 0" class="new-table-form">
+        <p>当前数据库没有数据表。新建表后可直接按订单模板导入。</p>
+        <div><input v-model="newTableName" maxlength="64" placeholder="例如：orders_2026" /><button type="button" :disabled="creatingTable || !newTableName.trim()" @click="createTargetTable">{{ creatingTable ? '新建中...' : '新建数据表' }}</button></div>
+        <p v-if="createTableError" class="error">{{ createTableError }}</p>
+      </div>
+      <div v-if="selectedFile" class="file-summary"><span>{{ selectedFile.name }}</span><span>{{ Math.ceil(selectedFile.size / 1024) }} KB</span><button type="button" class="secondary" :disabled="importing || !targetDatabase || !targetTable" @click="importFile">{{ importing ? '解析并写库中...' : '开始导入' }}</button></div>
       <div v-if="importResult" class="import-result" :class="importResult.status">
         <strong>{{ importResult.message }}</strong>
         <p v-if="importResult.status === 'success'">已成功写入 {{ importResult.inserted_rows }} 条数据至 {{ importResult.target_table }}。</p>
@@ -173,10 +252,15 @@ onBeforeUnmount(() => events?.close())
     </section>
 
     <section class="panel database-panel" aria-label="TiDB 数据表查询">
-      <div class="database-heading"><div><h2>TiDB 数据表查询</h2><p>从当前数据库选择任意表，最多显示 100 行。</p></div><div class="database-actions"><button v-if="canDeleteRows" type="button" class="delete" :disabled="selectedRowIds.length === 0 || databaseLoading" @click="deleteSelectedRows">删除选中（{{ selectedRowIds.length }}）</button><button type="button" class="secondary" @click="loadDatabaseMetadata">刷新表列表</button></div></div>
-      <label class="target-select">查询数据表<select v-model="selectedDatabaseTable"><option v-for="table in databaseTables" :key="table" :value="table">{{ table }}</option></select></label>
+      <div class="database-heading"><div><h2>TiDB 数据表查询</h2><p>选择业务数据库和数据表，最多显示 100 行。</p></div><div class="database-actions"><button v-if="canDeleteRows" type="button" class="delete" :disabled="selectedRowIds.length === 0 || databaseLoading" @click="deleteSelectedRows">删除选中（{{ selectedRowIds.length }}）</button><button type="button" class="secondary" @click="loadDatabases">刷新数据库列表</button></div></div>
+      <div class="query-selects">
+        <label class="target-select">查询数据库<select v-model="selectedDatabase"><option v-for="database in databases" :key="database" :value="database">{{ database }}</option></select></label>
+        <label class="target-select">查询数据表<select v-model="selectedDatabaseTable" :disabled="databaseTables.length === 0"><option v-for="table in databaseTables" :key="table" :value="table">{{ table }}</option></select></label>
+      </div>
+      <p class="query-context">当前查询：<strong>{{ selectedDatabase || '-' }}</strong> / <strong>{{ selectedDatabaseTable || '-' }}</strong></p>
       <p v-if="databaseError" class="error">{{ databaseError }}</p>
       <p v-else-if="databaseLoading" class="empty">查询中...</p>
+      <p v-else-if="selectedDatabase && databaseTables.length === 0" class="empty">该数据库暂无数据表，请在上方导入区域新建订单导入表。</p>
       <p v-else-if="databaseRows && databaseRows.rows.length === 0" class="empty">该表暂无数据</p>
       <div v-else-if="databaseRows" class="table-wrap database-table-wrap"><table><thead><tr><th v-if="canDeleteRows" class="selection-column"><input type="checkbox" :checked="allRowsSelected" aria-label="全选数据" @change="toggleAllRows(($event.target as HTMLInputElement).checked)" /></th><th v-for="column in databaseRows.columns" :key="column">{{ column }}</th></tr></thead><tbody><tr v-for="(row, index) in databaseRows.rows" :key="index"><td v-if="canDeleteRows" class="selection-column"><input v-if="rowId(row)" type="checkbox" :checked="selectedRowIds.includes(rowId(row)!)" :aria-label="`选择第 ${index + 1} 条数据`" @change="toggleRow(rowId(row)!, ($event.target as HTMLInputElement).checked)" /></td><td v-for="column in databaseRows.columns" :key="column">{{ displayValue(row[column]) }}</td></tr></tbody></table></div>
     </section>

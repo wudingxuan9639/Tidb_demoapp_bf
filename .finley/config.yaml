@@ -26,7 +26,7 @@
 quality:
   # 前端 / Node 侧命令
   frontend:
-    lint: "bash -n scripts/start-tidb.sh scripts/start-backend.sh scripts/start-frontend.sh"
+    lint: "bash -n scripts/start-tidb.sh scripts/start-backend.sh scripts/start-frontend.sh scripts/start-frontend-c.sh"
     typecheck: "cd frontend && npm run build"
     test: "cd backend && .venv/bin/python -m unittest discover -s tests"
   # 后端 / Python 侧命令
