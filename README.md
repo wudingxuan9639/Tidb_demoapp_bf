@@ -30,7 +30,7 @@ bash scripts/start-backend.sh
 bash scripts/start-frontend.sh
 ```
 
-按 TiDB、后端、前端的顺序启动。三个命令都需要保持运行；停止时在对应终端按 `Ctrl+C`。脚本固定使用 TiDB `v8.5.7` 与 `demo-app` 标签，后端会使用 `backend/.venv`，前端仅在 `node_modules` 不存在时执行 `npm ci`。
+按 TiDB、后端、前端的顺序启动。三个命令都需要保持运行；停止时在对应终端按 `Ctrl+C`。脚本默认使用 TiDB `v8.5.7` 与 `demo-app` 标签，后端会使用 `backend/.venv`，前端仅在 `node_modules` 不存在时执行 `npm ci`。
 
 ## 1. 启动 TiDB（Mac）
 
@@ -44,13 +44,13 @@ source ~/.zshrc
 tiup --version
 ```
 
-在一个单独的终端启动本地单节点集群：
+在一个单独的终端、项目根目录启动本地单节点集群：
 
 ```bash
-tiup playground v8.5.7 --tag demo-app
+bash scripts/start-tidb.sh
 ```
 
-保持此终端运行。首次启动会下载组件，SQL 服务就绪后可在另一个终端检查：
+保持此终端运行。启动脚本会同时确认 TiDB SQL 的 `4000` 端口和 TiKV 存储服务的 `20160` 端口；只有二者都就绪，才可启动后端。首次启动会下载组件，SQL 服务就绪后可在另一个终端检查：
 
 ```bash
 mysql -h 127.0.0.1 -P 4000 -u root -e 'SELECT VERSION();'
@@ -58,6 +58,28 @@ mysql -h 127.0.0.1 -P 4000 -u root -e 'CREATE DATABASE IF NOT EXISTS demo_app CH
 ```
 
 `demo_app` 是逻辑数据库，不是一个可手工管理的目录。TiKV 以内部格式保存物理数据，TiUP 默认在当前 Mac 用户的 `~/.tiup` 目录管理组件和运行数据。停止 `tiup playground` 后，按其终端提示清理开发集群数据；不要手工修改 TiKV 数据文件。
+
+### TiKV 崩溃排查与恢复
+
+若页面请求等待很久后显示 `Failed to fetch`，先检查 TiKV 是否仍在运行：
+
+```bash
+lsof -nP -iTCP:20160 -sTCP:LISTEN
+```
+
+没有 `tikv-server` 输出时，TiDB 即使仍监听 `4000` 也不能读写数据。当前启动脚本会在这种情况出现时停止不完整的本地集群并提示原因。已观察到的本机崩溃报告位于：
+
+```text
+~/Library/Logs/DiagnosticReports/tikv-server-*.ips
+```
+
+本项目观察到的崩溃属于 TiKV/RocksDB 后台压缩路径的原生 `SIGSEGV`，不是 Excel 导入逻辑，也不是内存耗尽。先完整停止 Playground 后重新运行 `bash scripts/start-tidb.sh`。若同一版本持续崩溃，先保留报告并在确认可丢弃本地 Demo 数据后，再按 TiUP 官方当前稳定补丁版本的迁移说明重建 Playground 数据；**普通启动不会也不应自动删除 `~/.tiup/data/demo-app`**。
+
+可通过环境变量临时指定已经验证过的 TiDB 版本，默认版本不会被静默改变：
+
+```bash
+TIDB_VERSION=vX.Y.Z bash scripts/start-tidb.sh
+```
 
 ## 2. 启动后端
 
@@ -107,7 +129,7 @@ npm run dev
 
 ## Excel 订单导入
 
-页面的“下载模板”会生成一个固定规则的 Excel 文件。上传时，第一行表头和顺序必须完全为：`订单ID`、`客户名称`、`订单金额`、`下单日期`。系统按固定映射写入前端选定的 `order_imports` 或 `order_import_archive` 表中的 `order_id`、`customer_name`、`amount`、`order_date` 字段。前端只展示这两个字段结构兼容的写入目标；后端也会再次校验，不能通过伪造请求写入其他表。
+页面的“下载模板”会生成一个固定规则的 Excel 文件。上传时，前四列的第一行表头和顺序必须完全为：`订单ID`、`客户名称`、`订单金额`、`下单日期`。系统允许其后存在由 Excel/WPS 格式产生的空白列，但这些列的每个单元格都必须为空；额外列中出现任何数据时，会提示具体行和列。系统按固定映射写入前端选定的 `order_imports` 或 `order_import_archive` 表中的 `order_id`、`customer_name`、`amount`、`order_date` 字段。前端只展示这两个字段结构兼容的写入目标；后端也会再次校验，不能通过伪造请求写入其他表。
 
 校验规则：仅支持 `.xlsx` / `.xls`；单文件最大 5 MB；最多 500 条数据；不允许公式；订单 ID 仅允许字母、数字、下划线和连字符，且不可重复；客户名称最长 100 字；金额大于 0 且最多两位小数；日期必须是 Excel 日期或 `YYYY-MM-DD`。校验失败、数据库中订单 ID 重复或写库失败时，前端会显示具体原因；写入使用单个事务，失败时不会写入部分数据。
 
