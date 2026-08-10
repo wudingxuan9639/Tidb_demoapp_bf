@@ -1,7 +1,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-`.specify/specs/001-stabilize-import-cluster/plan.md`.
+`.specify/specs/002-database-browser/plan.md`.
 <!-- SPECKIT END -->
 
 <!-- FINLEY:START -->

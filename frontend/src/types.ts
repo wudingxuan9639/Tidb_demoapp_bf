@@ -13,13 +13,13 @@ export interface ImportResult {
   target_table: string | null
 }
 
-export interface ImportTarget {
-  name: string
-  label: string
-}
-
 export interface DatabaseTableRows {
   table: string
   columns: string[]
   rows: Record<string, unknown>[]
+}
+
+export interface CreateOrderImportTableResult {
+  database: string
+  table: string
 }

@@ -23,6 +23,15 @@ class ImportTarget(BaseModel):
     label: str
 
 
+class CreateOrderImportTableRequest(BaseModel):
+    table_name: str = Field(min_length=1, max_length=64)
+
+
+class CreateOrderImportTableResult(BaseModel):
+    database: str
+    table: str
+
+
 class DatabaseTableRows(BaseModel):
     table: str
     columns: list[str]

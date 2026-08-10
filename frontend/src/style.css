@@ -35,6 +35,13 @@ td:nth-child(2) { max-width: 360px; white-space: pre-wrap; }
 .database-heading p { color: #667782; font-size: 14px; margin: 8px 0 0; }
 .database-actions { display: flex; gap: 8px; }
 .database-table-wrap { margin-top: 14px; }
+.query-selects { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.query-selects .target-select select { max-width: none; }
+.new-table-form { background: #f6f9fb; border: 1px solid #dbe2e7; margin-top: 14px; padding: 14px; }
+.new-table-form p { color: #50606b; font-size: 14px; margin: 0 0 10px; }
+.new-table-form div { display: flex; gap: 8px; }
+.new-table-form input { border: 1px solid #b8c3cc; border-radius: 5px; min-width: 0; padding: 9px 10px; }
+.query-context { background: #edf9f4; border-left: 3px solid #087b67; color: #075b4c; margin: 18px 0 0; padding: 10px 12px; }
 .selection-column { text-align: center; width: 42px; }
 .import-result { border-left: 3px solid; margin-top: 16px; padding: 10px 12px; }
 .import-result p { margin: 6px 0 0; }
@@ -43,4 +50,4 @@ td:nth-child(2) { max-width: 360px; white-space: pre-wrap; }
 .import-result.validation_failed, .import-result.write_failed { background: #fff3f2; border-color: #c93634; color: #9d2424; }
 .error { color: #b42318; }
 .empty { color: #667782; margin: 22px 0 4px; }
-@media (max-width: 700px) { .page-shell { width: min(100% - 24px, 980px); margin-top: 28px; } .import-heading, .file-summary, .database-heading { align-items: stretch; flex-direction: column; } .database-actions { flex-wrap: wrap; } .file-summary span:nth-child(2) { margin-right: 0; } .target-select { align-items: stretch; flex-direction: column; } .target-select select { max-width: none; } }
+@media (max-width: 700px) { .page-shell { width: min(100% - 24px, 980px); margin-top: 28px; } .import-heading, .file-summary, .database-heading { align-items: stretch; flex-direction: column; } .database-actions { flex-wrap: wrap; } .file-summary span:nth-child(2) { margin-right: 0; } .target-select { align-items: stretch; flex-direction: column; } .target-select select { max-width: none; } .query-selects { grid-template-columns: 1fr; } .new-table-form div { flex-direction: column; } }
