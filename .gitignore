@@ -7,3 +7,6 @@ node_modules/
 dist/
 .DS_Store
 .tidb-data/
+.finley/workspace/liuchangsheng/
+.specify/feature.json
+.specify/specs/

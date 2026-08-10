@@ -7,6 +7,7 @@ from typing import Any
 
 import xlrd
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 from .import_rules import EXPECTED_HEADERS
 from .schemas import ImportIssue
@@ -90,6 +91,29 @@ def _parse_date(value: Any) -> date | None:
     return None
 
 
+def _is_blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _without_blank_trailing_columns(rows: list[list[Any]]) -> list[list[Any]]:
+    required_columns = len(EXPECTED_HEADERS)
+    for row_number, row in enumerate(rows, start=1):
+        for column_number, value in enumerate(row[required_columns:], start=required_columns + 1):
+            if not _is_blank(value):
+                column = get_column_letter(column_number)
+                raise ExcelValidationError(
+                    "Excel 数据校验失败，请按错误提示修改后重新上传",
+                    [
+                        ImportIssue(
+                            row=row_number,
+                            field=f"{column}列",
+                            message=f"第 {column} 列存在未识别数据，请删除第 {column} 列及其后的额外数据",
+                        )
+                    ],
+                )
+    return [row[:required_columns] for row in rows]
+
+
 def parse_orders(filename: str, content: bytes) -> tuple[list[ParsedOrder], int]:
     suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if suffix not in {"xlsx", "xls"}:
@@ -102,6 +126,7 @@ def parse_orders(filename: str, content: bytes) -> tuple[list[ParsedOrder], int]
     rows = _read_xlsx(content) if suffix == "xlsx" else _read_xls(content)
     if not rows:
         raise ExcelValidationError("Excel 文件没有内容")
+    rows = _without_blank_trailing_columns(rows)
 
     headers = tuple(_string(value) if value is not None else "" for value in rows[0])
     if headers != EXPECTED_HEADERS:
