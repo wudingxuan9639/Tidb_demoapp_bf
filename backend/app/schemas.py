@@ -10,12 +10,14 @@ class ImportIssue(BaseModel):
 
 
 class ImportResult(BaseModel):
-    status: Literal["success", "validation_failed", "write_failed"]
+    status: Literal["success", "validation_failed", "duplicate_conflict", "write_failed"]
     message: str
     total_rows: int = 0
     inserted_rows: int = 0
     errors: list[ImportIssue] = Field(default_factory=list)
     target_table: str | None = None
+    duplicate_order_ids: list[str] = Field(default_factory=list)
+    replaced_rows: int = 0
 
 
 class ImportTarget(BaseModel):

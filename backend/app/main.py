@@ -119,6 +119,10 @@ def is_order_import_compatible(column_names: set[str]) -> bool:
     return ORDER_IMPORT_REQUIRED_COLUMNS.issubset({column.casefold() for column in column_names})
 
 
+def order_id_sort_clause(column_names: set[str]) -> str:
+    return " ORDER BY `order_id` ASC" if "order_id" in {name.casefold() for name in column_names} else ""
+
+
 async def import_target_error(database_name: str, table_name: str) -> str | None:
     if database_name not in await database_names():
         return "请选择页面提供的业务数据库"
@@ -195,8 +199,11 @@ async def list_schema_table_rows(database_name: str, table_name: str) -> Databas
         raise HTTPException(status_code=404, detail="未找到指定的数据表")
 
     # Both identifiers originate from TiDB metadata and are checked above before SQL is constructed.
+    sort_clause = order_id_sort_clause(await schema_table_column_names(database_name, table_name))
     async with engine.connect() as connection:
-        result = await connection.execute(text(f"SELECT * FROM `{database_name}`.`{table_name}` LIMIT 100"))
+        result = await connection.execute(
+            text(f"SELECT * FROM `{database_name}`.`{table_name}`{sort_clause} LIMIT 100")
+        )
         columns = list(result.keys())
         rows = [dict(row._mapping) for row in result]
     return DatabaseTableRows(table=table_name, columns=columns, rows=rows)
@@ -209,8 +216,9 @@ async def list_database_table_rows(table_name: str) -> DatabaseTableRows:
         raise HTTPException(status_code=404, detail="未找到指定的数据表")
 
     # table_name originates from database metadata, never directly from arbitrary client input.
+    sort_clause = order_id_sort_clause(await schema_table_column_names(engine.url.database or "", table_name))
     async with engine.connect() as connection:
-        result = await connection.execute(text(f"SELECT * FROM `{table_name}` LIMIT 100"))
+        result = await connection.execute(text(f"SELECT * FROM `{table_name}`{sort_clause} LIMIT 100"))
         columns = list(result.keys())
         rows = [dict(row._mapping) for row in result]
     return DatabaseTableRows(table=table_name, columns=columns, rows=rows)
@@ -265,6 +273,7 @@ async def import_orders(
     file: UploadFile = File(...),
     target_database: str = Form(""),
     target_table: str = Form("order_imports"),
+    replace_existing: bool = Form(False),
 ) -> ImportResult:
     database_name = target_database or engine.url.database
     if not database_name:
@@ -305,34 +314,56 @@ async def import_orders(
             VALUES (:order_id, :customer_name, :amount, :order_date)
             """
         )
+        update_statement = text(
+            f"""
+            UPDATE `{database_name}`.`{target_table}`
+            SET `customer_name` = :customer_name, `amount` = :amount, `order_date` = :order_date
+            WHERE `order_id` = :order_id
+            """
+        )
+        replaced_rows = 0
         async with engine.begin() as connection:
             existing_result = await connection.execute(
                 existing_statement, {"order_ids": [order.order_id for order in orders]}
             )
             existing_order_ids = {str(order_id) for order_id in existing_result.scalars()}
-            if existing_order_ids:
+            if existing_order_ids and not replace_existing:
                 return ImportResult(
-                    status="validation_failed",
-                    message="Excel 数据校验失败，请按错误提示修改后重新上传",
+                    status="duplicate_conflict",
+                    message="数据部分已经存在，是否要替换？",
                     total_rows=total_rows,
-                    target_table=target_table,
-                    errors=[
-                        ImportIssue(field="订单ID", message=f"订单ID 已存在于数据库：{order_id}")
-                        for order_id in sorted(existing_order_ids)
+                    target_table=f"{database_name}.{target_table}",
+                    duplicate_order_ids=sorted(existing_order_ids),
+                )
+            existing_orders = [order for order in orders if order.order_id in existing_order_ids]
+            new_orders = [order for order in orders if order.order_id not in existing_order_ids]
+            if existing_orders:
+                await connection.execute(
+                    update_statement,
+                    [
+                        {
+                            "order_id": order.order_id,
+                            "customer_name": order.customer_name,
+                            "amount": order.amount,
+                            "order_date": order.order_date,
+                        }
+                        for order in existing_orders
                     ],
                 )
-            await connection.execute(
-                insert_statement,
-                [
-                    {
-                        "order_id": order.order_id,
-                        "customer_name": order.customer_name,
-                        "amount": order.amount,
-                        "order_date": order.order_date,
-                    }
-                    for order in orders
-                ],
-            )
+                replaced_rows = len(existing_orders)
+            if new_orders:
+                await connection.execute(
+                    insert_statement,
+                    [
+                        {
+                            "order_id": order.order_id,
+                            "customer_name": order.customer_name,
+                            "amount": order.amount,
+                            "order_date": order.order_date,
+                        }
+                        for order in new_orders
+                    ],
+                )
     except SQLAlchemyError:
         return ImportResult(
             status="write_failed",
@@ -344,10 +375,11 @@ async def import_orders(
     broker.publish("database_changed")
     return ImportResult(
         status="success",
-        message="解析并写库成功",
+        message="解析并更新成功" if replaced_rows else "解析并写库成功",
         total_rows=total_rows,
         inserted_rows=len(orders),
         target_table=f"{database_name}.{target_table}",
+        replaced_rows=replaced_rows,
     )
 
 

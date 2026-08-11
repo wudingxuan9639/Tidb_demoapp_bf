@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from './api'
+import { orderDisplayColumns } from './order-display'
 import type { DatabaseTableRows, ImportResult } from './types'
 
 const fileInput = ref<HTMLInputElement>()
@@ -28,6 +29,9 @@ const canDeleteRows = computed(() => {
   return selectedDatabase.value === databases.value[0]
     && ['order_imports', 'order_import_archive'].includes(selectedDatabaseTable.value)
 })
+const visibleDatabaseColumns = computed(() => {
+  return orderDisplayColumns(databaseRows.value?.columns ?? [])
+})
 const allRowsSelected = computed(() => {
   const rows = databaseRows.value?.rows ?? []
   return rows.length > 0 && rows.every((row) => selectedRowIds.value.includes(Number(row.id)))
@@ -52,16 +56,21 @@ function handleDrop(event: DragEvent) {
   selectFile(event.dataTransfer?.files[0])
 }
 
-async function importFile() {
+async function importFile(replaceExisting = false) {
   if (!selectedFile.value) return
   importing.value = true
   importResult.value = null
   try {
-    importResult.value = await api.importOrders(selectedFile.value, targetDatabase.value, targetTable.value)
+    importResult.value = await api.importOrders(
+      selectedFile.value,
+      targetDatabase.value,
+      targetTable.value,
+      replaceExisting,
+    )
     if (importResult.value.status === 'success') {
       selectedDatabase.value = targetDatabase.value
       selectedDatabaseTable.value = targetTable.value
-      await loadQueryTables()
+      await refreshDatabaseMetadata()
     }
   } catch (reason) {
     importResult.value = {
@@ -71,10 +80,18 @@ async function importFile() {
       inserted_rows: 0,
       errors: [],
       target_table: targetTable.value ? `${targetDatabase.value}.${targetTable.value}` : null,
+      duplicate_order_ids: [],
+      replaced_rows: 0,
     }
   } finally {
     importing.value = false
   }
+}
+
+function cancelImport() {
+  selectedFile.value = null
+  importResult.value = null
+  if (fileInput.value) fileInput.value.value = ''
 }
 
 async function loadDatabases() {
@@ -142,6 +159,12 @@ async function loadDatabaseRows() {
   }
 }
 
+async function refreshDatabaseMetadata() {
+  await loadDatabases()
+  await Promise.all([loadTargetTables(), loadQueryTables()])
+  await loadDatabaseRows()
+}
+
 async function createTargetTable() {
   if (!targetDatabase.value || !newTableName.value.trim()) return
   creatingTable.value = true
@@ -203,12 +226,9 @@ watch(selectedDatabase, loadQueryTables)
 watch(selectedDatabaseTable, loadDatabaseRows)
 
 onMounted(() => {
-  loadDatabases()
+  refreshDatabaseMetadata()
   events = new EventSource(`${api.apiBase}/api/events`)
-  events.addEventListener('database_changed', async () => {
-    await Promise.all([loadTargetTables(), loadQueryTables()])
-    await loadDatabaseRows()
-  })
+  events.addEventListener('database_changed', refreshDatabaseMetadata)
 })
 
 onBeforeUnmount(() => events?.close())
@@ -241,10 +261,14 @@ onBeforeUnmount(() => events?.close())
         <div><input v-model="newTableName" maxlength="64" placeholder="例如：orders_2026" /><button type="button" :disabled="creatingTable || !newTableName.trim()" @click="createTargetTable">{{ creatingTable ? '新建中...' : '新建数据表' }}</button></div>
         <p v-if="createTableError" class="error">{{ createTableError }}</p>
       </div>
-      <div v-if="selectedFile" class="file-summary"><span>{{ selectedFile.name }}</span><span>{{ Math.ceil(selectedFile.size / 1024) }} KB</span><button type="button" class="secondary" :disabled="importing || !targetDatabase || !targetTable" @click="importFile">{{ importing ? '解析并写库中...' : '开始导入' }}</button></div>
+      <div v-if="selectedFile" class="file-summary"><span>{{ selectedFile.name }}</span><span>{{ Math.ceil(selectedFile.size / 1024) }} KB</span><button type="button" class="secondary" :disabled="importing || !targetDatabase || !targetTable" @click="() => importFile()">{{ importing ? '解析并写库中...' : '开始导入' }}</button></div>
       <div v-if="importResult" class="import-result" :class="importResult.status">
         <strong>{{ importResult.message }}</strong>
-        <p v-if="importResult.status === 'success'">已成功写入 {{ importResult.inserted_rows }} 条数据至 {{ importResult.target_table }}。</p>
+        <p v-if="importResult.status === 'success'">已成功写入 {{ importResult.inserted_rows }} 条数据至 {{ importResult.target_table }}<template v-if="importResult.replaced_rows">，其中替换已有订单 {{ importResult.replaced_rows }} 条</template>。</p>
+        <template v-else-if="importResult.status === 'duplicate_conflict'">
+          <p>发现 {{ importResult.duplicate_order_ids.length }} 个订单 ID 已存在：{{ importResult.duplicate_order_ids.join('、') }}。</p>
+          <div class="replacement-actions"><button type="button" :disabled="importing" @click="importFile(true)">是，替换已有数据</button><button type="button" class="secondary" :disabled="importing" @click="cancelImport">否，取消本次上传</button></div>
+        </template>
         <ul v-if="importResult.errors.length">
           <li v-for="(issue, index) in importResult.errors" :key="index">{{ issue.row ? `第 ${issue.row} 行：` : '' }}{{ issue.field ? `${issue.field} - ` : '' }}{{ issue.message }}</li>
         </ul>
@@ -252,7 +276,7 @@ onBeforeUnmount(() => events?.close())
     </section>
 
     <section class="panel database-panel" aria-label="TiDB 数据表查询">
-      <div class="database-heading"><div><h2>TiDB 数据表查询</h2><p>选择业务数据库和数据表，最多显示 100 行。</p></div><div class="database-actions"><button v-if="canDeleteRows" type="button" class="delete" :disabled="selectedRowIds.length === 0 || databaseLoading" @click="deleteSelectedRows">删除选中（{{ selectedRowIds.length }}）</button><button type="button" class="secondary" @click="loadDatabases">刷新数据库列表</button></div></div>
+      <div class="database-heading"><div><h2>TiDB 数据表查询</h2><p>选择业务数据库和数据表，最多显示 100 行。</p></div><div class="database-actions"><button v-if="canDeleteRows" type="button" class="delete" :disabled="selectedRowIds.length === 0 || databaseLoading" @click="deleteSelectedRows">删除选中（{{ selectedRowIds.length }}）</button><button type="button" class="secondary" :disabled="databaseLoading" @click="refreshDatabaseMetadata">刷新数据库列表</button></div></div>
       <div class="query-selects">
         <label class="target-select">查询数据库<select v-model="selectedDatabase"><option v-for="database in databases" :key="database" :value="database">{{ database }}</option></select></label>
         <label class="target-select">查询数据表<select v-model="selectedDatabaseTable" :disabled="databaseTables.length === 0"><option v-for="table in databaseTables" :key="table" :value="table">{{ table }}</option></select></label>
@@ -262,7 +286,7 @@ onBeforeUnmount(() => events?.close())
       <p v-else-if="databaseLoading" class="empty">查询中...</p>
       <p v-else-if="selectedDatabase && databaseTables.length === 0" class="empty">该数据库暂无数据表，请在上方导入区域新建订单导入表。</p>
       <p v-else-if="databaseRows && databaseRows.rows.length === 0" class="empty">该表暂无数据</p>
-      <div v-else-if="databaseRows" class="table-wrap database-table-wrap"><table><thead><tr><th v-if="canDeleteRows" class="selection-column"><input type="checkbox" :checked="allRowsSelected" aria-label="全选数据" @change="toggleAllRows(($event.target as HTMLInputElement).checked)" /></th><th v-for="column in databaseRows.columns" :key="column">{{ column }}</th></tr></thead><tbody><tr v-for="(row, index) in databaseRows.rows" :key="index"><td v-if="canDeleteRows" class="selection-column"><input v-if="rowId(row)" type="checkbox" :checked="selectedRowIds.includes(rowId(row)!)" :aria-label="`选择第 ${index + 1} 条数据`" @change="toggleRow(rowId(row)!, ($event.target as HTMLInputElement).checked)" /></td><td v-for="column in databaseRows.columns" :key="column">{{ displayValue(row[column]) }}</td></tr></tbody></table></div>
+      <div v-else-if="databaseRows" class="table-wrap database-table-wrap"><table><thead><tr><th v-if="canDeleteRows" class="selection-column"><input type="checkbox" :checked="allRowsSelected" aria-label="全选数据" @change="toggleAllRows(($event.target as HTMLInputElement).checked)" /></th><th v-for="column in visibleDatabaseColumns" :key="column.source">{{ column.label }}</th></tr></thead><tbody><tr v-for="(row, index) in databaseRows.rows" :key="index"><td v-if="canDeleteRows" class="selection-column"><input v-if="rowId(row)" type="checkbox" :checked="selectedRowIds.includes(rowId(row)!)" :aria-label="`选择第 ${index + 1} 条数据`" @change="toggleRow(rowId(row)!, ($event.target as HTMLInputElement).checked)" /></td><td v-for="column in visibleDatabaseColumns" :key="column.source">{{ displayValue(row[column.source]) }}</td></tr></tbody></table></div>
     </section>
 
   </main>

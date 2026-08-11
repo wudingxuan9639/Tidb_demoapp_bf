@@ -152,9 +152,11 @@ bash scripts/start-frontend-c.sh
 
 B 端上传区域可选择业务数据库及其数据表。后端将表头映射到 `order_id`、`customer_name`、`amount`、`order_date` 后，先确认该表具有这四个字段，再写入选中的 `数据库.数据表`。所选数据库尚未有任何表时，B 端会提供新建表输入框；表名仅可使用字母、数字和下划线，且必须以字母或下划线开头。新建表采用固定订单导入结构，建成后可立即选中导入和查询。系统数据库不会显示在选择器中。
 
+若目标表已有相同的 `order_id`，首次上传不会改动任何数据，B 端会显示“数据部分已经存在，是否要替换？”。选择“否”会取消本次上传；选择“是”会重新上传并重新校验同一个 Excel 文件。校验成功后，后端会在一个事务中更新当前匹配订单的客户名称、金额和下单日期，保留原有 `id` 和 `order_id`，再仅插入文件中的新增订单；校验或写库失败都不会改动旧数据。
+
 校验规则：仅支持 `.xlsx` / `.xls`；单文件最大 5 MB；最多 500 条数据；不允许公式；订单 ID 仅允许字母、数字、下划线和连字符，且不可重复；客户名称最长 100 字；金额大于 0 且最多两位小数；日期必须是 Excel 日期或 `YYYY-MM-DD`。校验失败、数据库中订单 ID 重复或写库失败时，前端会显示具体原因；写入使用单个事务，失败时不会写入部分数据。
 
-“TiDB 数据表查询”区域通过 `GET /api/databases`、`GET /api/databases/{database}/tables` 和 `GET /api/databases/{database}/tables/{table}/rows` 依次选择业务数据库、数据表并读取选中表的前 100 行。查询的数据库和表名必须来自后端返回的实际列表。
+“TiDB 数据表查询”区域通过 `GET /api/databases`、`GET /api/databases/{database}/tables` 和 `GET /api/databases/{database}/tables/{table}/rows` 依次选择业务数据库、数据表并读取选中表的前 100 行。查询的数据库和表名必须来自后端返回的实际列表；含有 `order_id` 字段的数据表会按 `order_id` 升序显示。B、C 查询界面会隐藏技术 `id` 列，但 B 的多选删除仍在内部使用它。订单查询结果仅展示 `order_id`、`customer_name`、`amount`、`order_date` 四列，并分别显示为“订单ID”“客户名称”“订单金额”“下单日期”；这是前端显示映射，不会修改后端字段或 TiDB 数据表。
 
 订单导入表和订单导入归档表支持在页面多选删除。后端通过 `DELETE /api/tables/{table_name}/rows` 接收主键 ID 列表，并且只允许删除 `order_imports`、`order_import_archive` 两张订单表的数据。
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from './api'
+import { orderDisplayColumns } from './order-display'
 import type { DatabaseTableRows } from './types'
 
 const databases = ref<string[]>([])
@@ -11,6 +12,8 @@ const rows = ref<DatabaseTableRows | null>(null)
 const loading = ref(false)
 const error = ref('')
 let events: EventSource | undefined
+
+const visibleColumns = computed(() => orderDisplayColumns(rows.value?.columns ?? []))
 
 function displayValue(value: unknown) {
   if (value === null || value === undefined || value === '') return '-'
@@ -57,7 +60,7 @@ async function loadTables() {
   }
 }
 
-async function refresh() {
+async function refreshDatabaseMetadata() {
   loading.value = true
   error.value = ''
   try {
@@ -76,9 +79,9 @@ watch(selectedDatabase, loadTables)
 watch(selectedTable, loadRows)
 
 onMounted(() => {
-  refresh()
+  refreshDatabaseMetadata()
   events = new EventSource(`${api.apiBase}/api/events`)
-  events.addEventListener('database_changed', refresh)
+  events.addEventListener('database_changed', refreshDatabaseMetadata)
 })
 
 onBeforeUnmount(() => events?.close())
@@ -97,7 +100,7 @@ onBeforeUnmount(() => events?.close())
           <h2>TiDB 数据库浏览</h2>
           <p>选择数据库和数据表，最多显示 100 行。</p>
         </div>
-        <button type="button" class="secondary" :disabled="loading" @click="refresh">刷新</button>
+        <button type="button" class="secondary" :disabled="loading" @click="refreshDatabaseMetadata">刷新</button>
       </div>
 
       <div class="query-selects">
@@ -116,8 +119,8 @@ onBeforeUnmount(() => events?.close())
       <p v-else-if="rows && rows.rows.length === 0" class="empty">该表暂无数据</p>
       <div v-else-if="rows" class="table-wrap database-table-wrap">
         <table>
-          <thead><tr><th v-for="column in rows.columns" :key="column">{{ column }}</th></tr></thead>
-          <tbody><tr v-for="(row, index) in rows.rows" :key="index"><td v-for="column in rows.columns" :key="column">{{ displayValue(row[column]) }}</td></tr></tbody>
+          <thead><tr><th v-for="column in visibleColumns" :key="column.source">{{ column.label }}</th></tr></thead>
+          <tbody><tr v-for="(row, index) in rows.rows" :key="index"><td v-for="column in visibleColumns" :key="column.source">{{ displayValue(row[column.source]) }}</td></tr></tbody>
         </table>
       </div>
     </section>
