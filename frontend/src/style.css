@@ -46,7 +46,9 @@ td:nth-child(2) { max-width: 360px; white-space: pre-wrap; }
 .import-result { border-left: 3px solid; margin-top: 16px; padding: 10px 12px; }
 .import-result p { margin: 6px 0 0; }
 .import-result ul { margin: 8px 0 0; padding-left: 20px; }
+.replacement-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .import-result.success { background: #edf9f4; border-color: #087b67; color: #075b4c; }
+.import-result.duplicate_conflict { background: #fff8e7; border-color: #b7791f; color: #7a4b09; }
 .import-result.validation_failed, .import-result.write_failed { background: #fff3f2; border-color: #c93634; color: #9d2424; }
 .error { color: #b42318; }
 .empty { color: #667782; margin: 22px 0 4px; }

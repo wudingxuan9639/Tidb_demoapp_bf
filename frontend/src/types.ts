@@ -5,12 +5,14 @@ export interface ImportIssue {
 }
 
 export interface ImportResult {
-  status: 'success' | 'validation_failed' | 'write_failed'
+  status: 'success' | 'validation_failed' | 'duplicate_conflict' | 'write_failed'
   message: string
   total_rows: number
   inserted_rows: number
   errors: ImportIssue[]
   target_table: string | null
+  duplicate_order_ids: string[]
+  replaced_rows: number
 }
 
 export interface DatabaseTableRows {

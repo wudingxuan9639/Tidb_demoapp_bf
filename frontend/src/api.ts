@@ -12,11 +12,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   apiBase,
-  importOrders: (file: File, targetDatabase: string, targetTable: string) => {
+  importOrders: (file: File, targetDatabase: string, targetTable: string, replaceExisting = false) => {
     const body = new FormData()
     body.append('file', file)
     body.append('target_database', targetDatabase)
     body.append('target_table', targetTable)
+    body.append('replace_existing', String(replaceExisting))
     return request<ImportResult>('/api/order-import', { method: 'POST', body })
   },
   orderTemplateUrl: `${apiBase}/api/order-import/template`,

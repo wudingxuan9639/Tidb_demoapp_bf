@@ -3,12 +3,14 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
+from app.schemas import ImportResult
 from app.main import (
     import_target_error,
     is_order_import_compatible,
     is_valid_table_name,
     list_schema_table_rows,
     list_schema_tables,
+    order_id_sort_clause,
     visible_database_names,
 )
 
@@ -32,6 +34,20 @@ class DatabaseBrowserTest(unittest.IsolatedAsyncioTestCase):
             is_order_import_compatible({"id", "order_id", "customer_name", "amount", "order_date"})
         )
         self.assertFalse(is_order_import_compatible({"id", "order_id", "customer_name", "amount"}))
+
+    def test_duplicate_import_result_includes_order_ids_without_replacements(self) -> None:
+        result = ImportResult(
+            status="duplicate_conflict",
+            message="数据部分已经存在，是否要替换？",
+            duplicate_order_ids=["ORD-10001", "ORD-10002"],
+        )
+
+        self.assertEqual(result.duplicate_order_ids, ["ORD-10001", "ORD-10002"])
+        self.assertEqual(result.replaced_rows, 0)
+
+    def test_order_id_sort_is_used_only_for_tables_with_order_id(self) -> None:
+        self.assertEqual(order_id_sort_clause({"id", "order_id"}), " ORDER BY `order_id` ASC")
+        self.assertEqual(order_id_sort_clause({"id", "customer_name"}), "")
 
     async def test_import_target_reports_missing_required_columns(self) -> None:
         with patch("app.main.database_names", new=AsyncMock(return_value=["demo_app"])):
