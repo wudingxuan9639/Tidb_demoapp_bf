@@ -21,6 +21,41 @@ export interface DatabaseTableRows {
   rows: Record<string, unknown>[]
 }
 
+export interface PaginatedOrderRows {
+  rows: OrderRow[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
+export interface OrderRow {
+  order_id: string
+  customer_name: string
+  amount: string | number
+  order_date: string
+}
+
+export interface OrderInput {
+  order_id: string
+  customer_name: string
+  amount: string
+  order_date: string
+}
+
+export interface OrderUpdateInput {
+  customer_name: string
+  amount: string
+  order_date: string
+}
+
+export interface OrderWriteResult {
+  status: 'success' | 'duplicate_conflict'
+  message: string
+  order_id: string
+  duplicate_order_ids: string[]
+}
+
 export interface CreateOrderImportTableResult {
   database: string
   table: string
