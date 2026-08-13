@@ -40,6 +40,42 @@ class DatabaseTableRows(BaseModel):
     rows: list[dict[str, Any]]
 
 
+class PaginatedOrderRows(BaseModel):
+    rows: list[dict[str, Any]]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class OrderInput(BaseModel):
+    order_id: str
+    customer_name: str
+    amount: Any
+    order_date: Any
+
+
+class OrderUpdateInput(BaseModel):
+    customer_name: str
+    amount: Any
+    order_date: Any
+
+
+class CreateOrderRequest(OrderInput):
+    replace_existing: bool = False
+
+
+class OrderWriteResult(BaseModel):
+    status: Literal["success", "duplicate_conflict"]
+    message: str
+    order_id: str
+    duplicate_order_ids: list[str] = Field(default_factory=list)
+
+
+class DeleteOrderRowsRequest(BaseModel):
+    order_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class DeleteRowsRequest(BaseModel):
     ids: list[int] = Field(min_length=1, max_length=100)
 

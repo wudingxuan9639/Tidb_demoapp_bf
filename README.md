@@ -1,6 +1,6 @@
 # Lightweight TiDB CRUD Demo
 
-一个极简的单页数据管理 Demo：Vue 3 + TypeScript 前端、FastAPI 后端和 TiDB 数据库。支持创建、关键词查询、删除；浏览器通过 SSE 接收数据变更通知并自动刷新列表。
+一个极简的订单数据管理 Demo：Vue 3 + TypeScript 前端、FastAPI 后端和 TiDB 数据库。B 端支持 Excel 导入、查询、新增、修改和删除；C 端以订单卡片浏览全部业务订单。浏览器通过 SSE 接收数据变更通知并自动刷新。
 
 ## 端口约定
 
@@ -9,7 +9,7 @@
 | 服务 | 地址 |
 | --- | --- |
 | B 端 Vue 前端 | `http://127.0.0.1:8517` |
-| C 端 Vue 数据库浏览 | `http://127.0.0.1:8518/c.html` |
+| C 端 Vue 订单卡片浏览 | `http://127.0.0.1:8518/c.html` |
 | FastAPI 后端 | `http://127.0.0.1:8800` |
 | FastAPI 接口文档 | `http://127.0.0.1:8800/docs` |
 | TiDB SQL | `127.0.0.1:4000` |
@@ -17,7 +17,7 @@
 
 ## 下次启动（推荐）
 
-首次完成下面的安装配置后，B 端开发需要打开三个终端；需要 C 端数据库浏览时再打开第四个终端。所有命令均在项目根目录运行：
+首次完成下面的安装配置后，B 端开发需要打开三个终端；需要 C 端订单浏览时再打开第四个终端。所有命令均在项目根目录运行：
 
 ```bash
 bash scripts/start-tidb.sh
@@ -35,7 +35,7 @@ bash scripts/start-frontend.sh
 bash scripts/start-frontend-c.sh
 ```
 
-按 TiDB、后端、B 端前端、C 端前端的顺序启动。四个命令都需要保持运行；停止时在对应终端按 `Ctrl+C`。C 端仅做数据库浏览，默认访问 `http://127.0.0.1:8518/c.html`。脚本默认使用 TiDB `v8.5.7` 与 `demo-app` 标签，后端会使用 `backend/.venv`，前端仅在 `node_modules` 不存在时执行 `npm ci`。
+按 TiDB、后端、B 端前端、C 端前端的顺序启动。四个命令都需要保持运行；停止时在对应终端按 `Ctrl+C`。C 端仅做订单浏览，默认访问 `http://127.0.0.1:8518/c.html`。脚本默认使用 TiDB `v8.5.7` 与 `demo-app` 标签，后端会使用 `backend/.venv`，前端仅在 `node_modules` 不存在时执行 `npm ci`。
 
 ## 1. 启动 TiDB（Mac）
 
@@ -118,7 +118,7 @@ npm run dev
 
 访问 B 端：`http://127.0.0.1:8517`。
 
-## 4. 启动 C 端数据库浏览
+## 4. 启动 C 端订单浏览
 
 新开一个终端，在项目根目录运行：
 
@@ -126,7 +126,7 @@ npm run dev
 bash scripts/start-frontend-c.sh
 ```
 
-访问 `http://127.0.0.1:8518/c.html`。C 端通过同一个 FastAPI 服务读取当前 TiDB 连接可见的业务数据库、所选数据库下的数据表，以及所选表的前 100 行。TiDB/MySQL 系统数据库会在后端过滤；由于 B、C 共用同一个后端连接字符串，C 会将 B 写入的默认数据库排在首位并在打开时选中。C 端为只读页面；B 端导入或删除后，C 端会通过 SSE 自动刷新当前查询。
+访问 `http://127.0.0.1:8518/c.html`。C 端为只读页面，会从当前 TiDB 连接下所有业务数据库、所有兼容订单字段的数据表中汇总订单，并以卡片展示。页面不展示数据库名或表名；每张卡片依次显示订单 ID、固定图片、客户名称、金额和下单日期。可切换“按订单 ID 排序”或“按下单日期排序”，每页 100 张卡片；也可按订单 ID、订单金额或客户名称查询。B 端导入、新增、修改或删除后，C 端会通过 SSE 自动刷新当前页。
 
 ## 实时更新与扩展边界
 
@@ -145,6 +145,11 @@ bash scripts/start-frontend-c.sh
 | `GET` | `/api/databases/{database}/tables` | 获取指定数据库的数据表 |
 | `POST` | `/api/databases/{database}/tables` | 在业务数据库中创建固定结构的订单导入表 |
 | `GET` | `/api/databases/{database}/tables/{table}/rows` | 获取指定数据表的前 100 行 |
+| `GET` | `/api/databases/{database}/tables/{table}/orders` | 获取 B 端指定订单表的分页数据 |
+| `POST` | `/api/databases/{database}/tables/{table}/orders` | 新增订单；订单 ID 重复时返回替换确认 |
+| `PATCH` | `/api/databases/{database}/tables/{table}/orders/{order_id}` | 修改订单业务字段，订单 ID 不变 |
+| `DELETE` | `/api/databases/{database}/tables/{table}/orders` | 按订单 ID 删除一条或多条订单 |
+| `GET` | `/api/orders` | C 端聚合订单卡片数据，支持分页、排序和订单业务字段查询 |
 
 ## Excel 订单导入
 
@@ -156,9 +161,7 @@ B 端上传区域可选择业务数据库及其数据表。后端将表头映射
 
 校验规则：仅支持 `.xlsx` / `.xls`；单文件最大 5 MB；最多 500 条数据；不允许公式；订单 ID 仅允许字母、数字、下划线和连字符，且不可重复；客户名称最长 100 字；金额大于 0 且最多两位小数；日期必须是 Excel 日期或 `YYYY-MM-DD`。校验失败、数据库中订单 ID 重复或写库失败时，前端会显示具体原因；写入使用单个事务，失败时不会写入部分数据。
 
-“TiDB 数据表查询”区域通过 `GET /api/databases`、`GET /api/databases/{database}/tables` 和 `GET /api/databases/{database}/tables/{table}/rows` 依次选择业务数据库、数据表并读取选中表的前 100 行。查询的数据库和表名必须来自后端返回的实际列表；含有 `order_id` 字段的数据表会按 `order_id` 升序显示。B、C 查询界面会隐藏技术 `id` 列，但 B 的多选删除仍在内部使用它。订单查询结果仅展示 `order_id`、`customer_name`、`amount`、`order_date` 四列，并分别显示为“订单ID”“客户名称”“订单金额”“下单日期”；这是前端显示映射，不会修改后端字段或 TiDB 数据表。
-
-订单导入表和订单导入归档表支持在页面多选删除。后端通过 `DELETE /api/tables/{table_name}/rows` 接收主键 ID 列表，并且只允许删除 `order_imports`、`order_import_archive` 两张订单表的数据。
+“TiDB 数据表查询”区域可选择业务数据库和数据表；对于含 `order_id`、`customer_name`、`amount`、`order_date` 的兼容订单表，每页显示 100 条并按 `order_id` 升序排列。用户可新增订单、修改单条订单或勾选多条删除，所有删除均先二次确认。新增和修改使用与 Excel 完全相同的后端校验规则；修改时订单 ID 为只读。新增时如订单 ID 已存在，页面会询问是否替换，确认后只更新客户名称、金额和下单日期，保留 `id` 和 `order_id`。订单查询结果仅展示“订单ID”“客户名称”“订单金额”“下单日期”四列；这是前端显示映射，不会修改后端字段或 TiDB 数据表。
 
 若数据库此前已运行旧版本，请在 TiDB 启动后执行一次迁移。该命令会删除旧的 `items` 表，并将 `order_imports_archive` 重命名为 `order_import_archive`，然后确保两张订单导入表存在：
 

@@ -13,7 +13,7 @@ from sqlalchemy import bindparam, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from .database import engine
-from .excel_import import ExcelValidationError, parse_orders
+from .excel_import import ExcelValidationError, ParsedOrder, parse_orders, validate_order_values
 from .events import broker
 from .import_rules import ORDER_IMPORT_COLUMNS
 from .models import Base, OrderImport, OrderImportArchive
@@ -21,11 +21,16 @@ from .schemas import (
     DatabaseTableRows,
     CreateOrderImportTableRequest,
     CreateOrderImportTableResult,
+    CreateOrderRequest,
     DeleteRowsRequest,
     DeleteRowsResult,
+    DeleteOrderRowsRequest,
     ImportIssue,
     ImportResult,
     ImportTarget,
+    OrderUpdateInput,
+    OrderWriteResult,
+    PaginatedOrderRows,
 )
 
 IMPORT_TARGETS = {
@@ -46,6 +51,7 @@ SYSTEM_DATABASE_NAMES = frozenset(
 )
 ORDER_IMPORT_REQUIRED_COLUMNS = frozenset({"order_id", "customer_name", "amount", "order_date"})
 TABLE_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+PAGE_SIZE = 100
 
 
 @asynccontextmanager
@@ -123,6 +129,30 @@ def order_id_sort_clause(column_names: set[str]) -> str:
     return " ORDER BY `order_id` ASC" if "order_id" in {name.casefold() for name in column_names} else ""
 
 
+def page_offset(page: int, page_size: int = PAGE_SIZE) -> int:
+    return (page - 1) * page_size
+
+
+def order_sort_clause(sort_by: str) -> str:
+    if sort_by == "order_id":
+        return " ORDER BY `order_id` ASC"
+    if sort_by == "order_date":
+        return " ORDER BY `order_date` DESC, `order_id` ASC"
+    raise HTTPException(status_code=422, detail="排序方式只能是 order_id 或 order_date")
+
+
+def order_search_clause(search_field: str, keyword: str) -> tuple[str, dict[str, str]]:
+    if not keyword.strip():
+        return "", {}
+    if search_field == "order_id":
+        return " WHERE `order_id` LIKE :keyword", {"keyword": f"%{keyword.strip()}%"}
+    if search_field == "customer_name":
+        return " WHERE `customer_name` LIKE :keyword", {"keyword": f"%{keyword.strip()}%"}
+    if search_field == "amount":
+        return " WHERE CAST(`amount` AS CHAR) LIKE :keyword", {"keyword": f"%{keyword.strip()}%"}
+    raise HTTPException(status_code=422, detail="查询字段只能是 order_id、customer_name 或 amount")
+
+
 async def import_target_error(database_name: str, table_name: str) -> str | None:
     if database_name not in await database_names():
         return "请选择页面提供的业务数据库"
@@ -132,6 +162,28 @@ async def import_target_error(database_name: str, table_name: str) -> str | None
     if not is_order_import_compatible(columns):
         return "目标表缺少订单导入所需字段：order_id、customer_name、amount、order_date"
     return None
+
+
+async def validated_order_target(database_name: str, table_name: str) -> None:
+    target_error = await import_target_error(database_name, table_name)
+    if target_error is not None:
+        raise HTTPException(status_code=422, detail=target_error)
+
+
+def order_write_error(error: ExcelValidationError) -> HTTPException:
+    detail = "; ".join(
+        f"{issue.field or '数据'}：{issue.message}" for issue in error.errors
+    ) or error.message
+    return HTTPException(status_code=422, detail=detail)
+
+
+def order_values(order: ParsedOrder) -> dict[str, object]:
+    return {
+        "order_id": order.order_id,
+        "customer_name": order.customer_name,
+        "amount": order.amount,
+        "order_date": order.order_date,
+    }
 
 
 @app.get("/api/tables", response_model=list[str])
@@ -207,6 +259,177 @@ async def list_schema_table_rows(database_name: str, table_name: str) -> Databas
         columns = list(result.keys())
         rows = [dict(row._mapping) for row in result]
     return DatabaseTableRows(table=table_name, columns=columns, rows=rows)
+
+
+@app.get("/api/databases/{database_name}/tables/{table_name}/orders", response_model=PaginatedOrderRows)
+async def list_schema_orders(
+    database_name: str, table_name: str, page: int = 1, page_size: int = PAGE_SIZE
+) -> PaginatedOrderRows:
+    if page < 1 or page_size != PAGE_SIZE:
+        raise HTTPException(status_code=422, detail="页码必须从 1 开始，单页固定 100 条")
+    await validated_order_target(database_name, table_name)
+    async with engine.connect() as connection:
+        total = int(
+            (await connection.execute(text(f"SELECT COUNT(*) FROM `{database_name}`.`{table_name}`"))).scalar_one()
+        )
+        result = await connection.execute(
+            text(
+                f"SELECT `order_id`, `customer_name`, `amount`, `order_date` "
+                f"FROM `{database_name}`.`{table_name}` ORDER BY `order_id` ASC "
+                "LIMIT :limit OFFSET :offset"
+            ),
+            {"limit": page_size, "offset": page_offset(page, page_size)},
+        )
+        rows = [dict(row._mapping) for row in result]
+    return PaginatedOrderRows(
+        rows=rows,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=max(1, (total + page_size - 1) // page_size),
+    )
+
+
+@app.post("/api/databases/{database_name}/tables/{table_name}/orders", response_model=OrderWriteResult)
+async def create_order(
+    database_name: str, table_name: str, payload: CreateOrderRequest
+) -> OrderWriteResult:
+    await validated_order_target(database_name, table_name)
+    try:
+        order = validate_order_values(payload.order_id, payload.customer_name, payload.amount, payload.order_date)
+    except ExcelValidationError as error:
+        raise order_write_error(error) from error
+    existing_statement = text(
+        f"SELECT `order_id` FROM `{database_name}`.`{table_name}` WHERE `order_id` = :order_id"
+    )
+    try:
+        async with engine.begin() as connection:
+            exists = (await connection.execute(existing_statement, {"order_id": order.order_id})).scalar_one_or_none()
+            if exists and not payload.replace_existing:
+                return OrderWriteResult(
+                    status="duplicate_conflict",
+                    message="数据部分已经存在，是否要替换？",
+                    order_id=order.order_id,
+                    duplicate_order_ids=[order.order_id],
+                )
+            if exists:
+                await connection.execute(
+                    text(
+                        f"UPDATE `{database_name}`.`{table_name}` SET `customer_name` = :customer_name, "
+                        "`amount` = :amount, `order_date` = :order_date WHERE `order_id` = :order_id"
+                    ),
+                    order_values(order),
+                )
+                message = "订单已替换"
+            else:
+                await connection.execute(
+                    text(
+                        f"INSERT INTO `{database_name}`.`{table_name}` "
+                        "(`order_id`, `customer_name`, `amount`, `order_date`) "
+                        "VALUES (:order_id, :customer_name, :amount, :order_date)"
+                    ),
+                    order_values(order),
+                )
+                message = "订单已新增"
+    except SQLAlchemyError as error:
+        raise HTTPException(status_code=500, detail=f"写入数据库失败：{error.__class__.__name__}") from error
+    broker.publish("database_changed")
+    return OrderWriteResult(status="success", message=message, order_id=order.order_id)
+
+
+@app.patch("/api/databases/{database_name}/tables/{table_name}/orders/{order_id}", response_model=OrderWriteResult)
+async def update_order(
+    database_name: str, table_name: str, order_id: str, payload: OrderUpdateInput
+) -> OrderWriteResult:
+    await validated_order_target(database_name, table_name)
+    try:
+        order = validate_order_values(order_id, payload.customer_name, payload.amount, payload.order_date)
+    except ExcelValidationError as error:
+        raise order_write_error(error) from error
+    try:
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    f"UPDATE `{database_name}`.`{table_name}` SET `customer_name` = :customer_name, "
+                    "`amount` = :amount, `order_date` = :order_date WHERE `order_id` = :order_id"
+                ),
+                order_values(order),
+            )
+            if not result.rowcount:
+                raise HTTPException(status_code=404, detail="未找到要修改的订单")
+    except SQLAlchemyError as error:
+        raise HTTPException(status_code=500, detail=f"写入数据库失败：{error.__class__.__name__}") from error
+    broker.publish("database_changed")
+    return OrderWriteResult(status="success", message="订单已修改", order_id=order_id)
+
+
+@app.delete("/api/databases/{database_name}/tables/{table_name}/orders", response_model=DeleteRowsResult)
+async def delete_schema_orders(
+    database_name: str, table_name: str, payload: DeleteOrderRowsRequest
+) -> DeleteRowsResult:
+    await validated_order_target(database_name, table_name)
+    statement = text(
+        f"DELETE FROM `{database_name}`.`{table_name}` WHERE `order_id` IN :order_ids"
+    ).bindparams(bindparam("order_ids", expanding=True))
+    try:
+        async with engine.begin() as connection:
+            result = await connection.execute(statement, {"order_ids": payload.order_ids})
+    except SQLAlchemyError as error:
+        raise HTTPException(status_code=500, detail=f"删除数据失败：{error.__class__.__name__}") from error
+    broker.publish("database_changed")
+    return DeleteRowsResult(deleted_rows=result.rowcount or 0)
+
+
+@app.get("/api/orders", response_model=PaginatedOrderRows)
+async def list_all_orders(
+    page: int = 1,
+    page_size: int = PAGE_SIZE,
+    sort_by: str = "order_id",
+    search_field: str = "order_id",
+    keyword: str = "",
+) -> PaginatedOrderRows:
+    if page < 1 or page_size != PAGE_SIZE:
+        raise HTTPException(status_code=422, detail="页码必须从 1 开始，单页固定 100 条")
+    sort_clause = order_sort_clause(sort_by)
+    search_clause, search_params = order_search_clause(search_field, keyword)
+    compatible_targets: list[tuple[str, str]] = []
+    for database_name in await database_names():
+        for table_name in await schema_table_names(database_name):
+            if is_order_import_compatible(await schema_table_column_names(database_name, table_name)):
+                compatible_targets.append((database_name, table_name))
+    if not compatible_targets:
+        return PaginatedOrderRows(rows=[], total=0, page=page, page_size=page_size, total_pages=1)
+    union_query = " UNION ALL ".join(
+        f"SELECT `order_id`, `customer_name`, `amount`, `order_date` FROM `{database_name}`.`{table_name}`"
+        for database_name, table_name in compatible_targets
+    )
+    try:
+        async with engine.connect() as connection:
+            total = int(
+                (
+                    await connection.execute(
+                        text(f"SELECT COUNT(*) FROM ({union_query}) AS orders{search_clause}"),
+                        search_params,
+                    )
+                ).scalar_one()
+            )
+            result = await connection.execute(
+                text(
+                    f"SELECT * FROM ({union_query}) AS orders{search_clause}{sort_clause} "
+                    "LIMIT :limit OFFSET :offset"
+                ),
+                {**search_params, "limit": page_size, "offset": page_offset(page, page_size)},
+            )
+            rows = [dict(row._mapping) for row in result]
+    except SQLAlchemyError as error:
+        raise HTTPException(status_code=500, detail=f"读取订单数据失败：{error.__class__.__name__}") from error
+    return PaginatedOrderRows(
+        rows=rows,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=max(1, (total + page_size - 1) // page_size),
+    )
 
 
 @app.get("/api/tables/{table_name}/rows", response_model=DatabaseTableRows)

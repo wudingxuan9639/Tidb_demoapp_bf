@@ -91,6 +91,44 @@ def _parse_date(value: Any) -> date | None:
     return None
 
 
+def validate_order_values(
+    order_id_value: Any,
+    customer_name_value: Any,
+    amount_value: Any,
+    order_date_value: Any,
+    *,
+    row: int | None = None,
+) -> ParsedOrder:
+    """Validate one order using the same rules as an Excel data row."""
+    order_id = _string(order_id_value) if order_id_value is not None else ""
+    customer_name = _string(customer_name_value) if customer_name_value is not None else ""
+    errors: list[ImportIssue] = []
+
+    if not ORDER_ID_PATTERN.fullmatch(order_id):
+        errors.append(ImportIssue(row=row, field="订单ID", message="必填，只允许字母、数字、下划线和连字符，最多 64 位"))
+    if not customer_name or len(customer_name) > 100:
+        errors.append(ImportIssue(row=row, field="客户名称", message="必填，且最多 100 个字符"))
+
+    amount: Decimal | None = None
+    try:
+        if isinstance(amount_value, bool) or amount_value in (None, ""):
+            raise InvalidOperation
+        amount = Decimal(str(amount_value))
+        if amount <= 0 or amount.as_tuple().exponent < -2 or amount > Decimal("9999999999.99"):
+            raise InvalidOperation
+    except (InvalidOperation, ValueError):
+        errors.append(ImportIssue(row=row, field="订单金额", message="必填，必须是大于 0 且最多两位小数的数字"))
+
+    order_date = _parse_date(order_date_value)
+    if order_date is None:
+        errors.append(ImportIssue(row=row, field="下单日期", message="必填，格式必须为 YYYY-MM-DD"))
+
+    if errors:
+        raise ExcelValidationError("订单数据校验失败，请按错误提示修改后重试", errors)
+    assert amount is not None and order_date is not None
+    return ParsedOrder(order_id, customer_name, amount, order_date)
+
+
 def _is_blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
@@ -156,33 +194,20 @@ def parse_orders(filename: str, content: bytes) -> tuple[list[ParsedOrder], int]
             continue
 
         order_id = _string(values[0]) if values[0] is not None else ""
-        customer_name = _string(values[1]) if values[1] is not None else ""
+        is_duplicate_order_id = order_id in seen_order_ids
         if not ORDER_ID_PATTERN.fullmatch(order_id):
             errors.append(ImportIssue(row=offset, field="订单ID", message="必填，只允许字母、数字、下划线和连字符，最多 64 位"))
-        elif order_id in seen_order_ids:
+        elif is_duplicate_order_id:
             errors.append(ImportIssue(row=offset, field="订单ID", message="文件内订单ID重复"))
         else:
             seen_order_ids.add(order_id)
-
-        if not customer_name or len(customer_name) > 100:
-            errors.append(ImportIssue(row=offset, field="客户名称", message="必填，且最多 100 个字符"))
-
-        amount: Decimal | None = None
         try:
-            if isinstance(values[2], bool) or values[2] in (None, ""):
-                raise InvalidOperation
-            amount = Decimal(str(values[2]))
-            if amount <= 0 or amount.as_tuple().exponent < -2 or amount > Decimal("9999999999.99"):
-                raise InvalidOperation
-        except (InvalidOperation, ValueError):
-            errors.append(ImportIssue(row=offset, field="订单金额", message="必填，必须是大于 0 且最多两位小数的数字"))
-
-        order_date = _parse_date(values[3])
-        if order_date is None:
-            errors.append(ImportIssue(row=offset, field="下单日期", message="必填，格式必须为 YYYY-MM-DD"))
-
-        if order_id and customer_name and amount is not None and order_date is not None:
-            orders.append(ParsedOrder(order_id, customer_name, amount, order_date))
+            order = validate_order_values(*values, row=offset)
+            if not ORDER_ID_PATTERN.fullmatch(order_id) or is_duplicate_order_id:
+                continue
+            orders.append(order)
+        except ExcelValidationError as error:
+            errors.extend(error.errors)
 
     if errors:
         raise ExcelValidationError("Excel 数据校验失败，请按错误提示修改后重新上传", errors)

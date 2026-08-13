@@ -1,87 +1,69 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from './api'
-import { orderDisplayColumns } from './order-display'
-import type { DatabaseTableRows } from './types'
+import type { PaginatedOrderRows } from './types'
 
-const databases = ref<string[]>([])
-const tables = ref<string[]>([])
-const selectedDatabase = ref('')
-const selectedTable = ref('')
-const rows = ref<DatabaseTableRows | null>(null)
+type SortBy = 'order_id' | 'order_date'
+type SearchField = 'order_id' | 'customer_name' | 'amount'
+
+const sortBy = ref<SortBy>('order_id')
+const searchField = ref<SearchField>('order_id')
+const keyword = ref('')
+const page = ref(1)
+const orders = ref<PaginatedOrderRows | null>(null)
 const loading = ref(false)
 const error = ref('')
+let requestVersion = 0
 let events: EventSource | undefined
 
-const visibleColumns = computed(() => orderDisplayColumns(rows.value?.columns ?? []))
-
-function displayValue(value: unknown) {
-  if (value === null || value === undefined || value === '') return '-'
-  return typeof value === 'object' ? JSON.stringify(value) : String(value)
+function displayAmount(value: string | number) {
+  const amount = Number(value)
+  return Number.isFinite(amount) ? `¥${amount.toFixed(2)}` : `¥${value}`
 }
 
-async function loadRows() {
-  if (!selectedDatabase.value || !selectedTable.value) {
-    rows.value = null
-    return
-  }
+async function loadOrders() {
+  const version = ++requestVersion
   loading.value = true
   error.value = ''
   try {
-    rows.value = await api.listSchemaTableRows(selectedDatabase.value, selectedTable.value)
+    const result = await api.listAllOrders(page.value, sortBy.value, searchField.value, keyword.value)
+    if (version !== requestVersion) return
+    if (page.value > result.total_pages) {
+      page.value = result.total_pages
+      await loadOrders()
+      return
+    }
+    orders.value = result
   } catch (reason) {
-    rows.value = null
-    error.value = reason instanceof Error ? reason.message : '无法读取数据表'
+    if (version !== requestVersion) return
+    orders.value = null
+    error.value = reason instanceof Error ? reason.message : '无法读取订单数据'
   } finally {
-    loading.value = false
+    if (version === requestVersion) loading.value = false
   }
 }
 
-async function loadTables() {
-  if (!selectedDatabase.value) {
-    tables.value = []
-    selectedTable.value = ''
-    rows.value = null
-    return
-  }
-  loading.value = true
-  error.value = ''
-  try {
-    tables.value = await api.listSchemaTables(selectedDatabase.value)
-    if (!tables.value.includes(selectedTable.value)) selectedTable.value = tables.value[0] ?? ''
-    if (!selectedTable.value) rows.value = null
-  } catch (reason) {
-    tables.value = []
-    selectedTable.value = ''
-    rows.value = null
-    error.value = reason instanceof Error ? reason.message : '无法读取数据库表列表'
-  } finally {
-    loading.value = false
-  }
+function selectSort(value: SortBy) {
+  if (sortBy.value === value) return
+  sortBy.value = value
+  page.value = 1
+  loadOrders()
 }
 
-async function refreshDatabaseMetadata() {
-  loading.value = true
-  error.value = ''
-  try {
-    databases.value = await api.listDatabases()
-    if (!databases.value.includes(selectedDatabase.value)) selectedDatabase.value = databases.value[0] ?? ''
-    await loadTables()
-    await loadRows()
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '无法读取 TiDB 数据库列表'
-  } finally {
-    loading.value = false
-  }
+function searchOrders() {
+  page.value = 1
+  loadOrders()
 }
 
-watch(selectedDatabase, loadTables)
-watch(selectedTable, loadRows)
+function changePage(nextPage: number) {
+  page.value = nextPage
+  loadOrders()
+}
 
 onMounted(() => {
-  refreshDatabaseMetadata()
+  loadOrders()
   events = new EventSource(`${api.apiBase}/api/events`)
-  events.addEventListener('database_changed', refreshDatabaseMetadata)
+  events.addEventListener('database_changed', loadOrders)
 })
 
 onBeforeUnmount(() => events?.close())
@@ -90,38 +72,52 @@ onBeforeUnmount(() => events?.close())
 <template>
   <main class="page-shell c-page">
     <header>
-      <p class="eyebrow">C 端 · TiDB 数据库浏览</p>
-      <h1>数据库查询</h1>
+      <p class="eyebrow">C 端 · 订单浏览</p>
+      <h1>订单信息</h1>
     </header>
 
-    <section class="panel database-panel" aria-label="TiDB 数据库查询">
-      <div class="database-heading">
-        <div>
-          <h2>TiDB 数据库浏览</h2>
-          <p>选择数据库和数据表，最多显示 100 行。</p>
+    <section class="c-orders" aria-label="全部订单">
+      <div class="c-toolbar">
+        <div class="sort-control" aria-label="订单排序">
+          <button type="button" :class="{ active: sortBy === 'order_id' }" @click="selectSort('order_id')">按订单 ID 排序</button>
+          <button type="button" :class="{ active: sortBy === 'order_date' }" @click="selectSort('order_date')">按下单日期排序</button>
         </div>
-        <button type="button" class="secondary" :disabled="loading" @click="refreshDatabaseMetadata">刷新</button>
+        <button type="button" class="icon-button" title="刷新订单" aria-label="刷新订单" :disabled="loading" @click="loadOrders">↻</button>
       </div>
 
-      <div class="query-selects">
-        <label class="target-select">数据库
-          <select v-model="selectedDatabase" :disabled="loading"><option v-for="database in databases" :key="database" :value="database">{{ database }}</option></select>
+      <form class="order-search" @submit.prevent="searchOrders">
+        <label>查询字段
+          <select v-model="searchField">
+            <option value="order_id">订单 ID</option>
+            <option value="amount">订单金额</option>
+            <option value="customer_name">客户名称</option>
+          </select>
         </label>
-        <label class="target-select">数据表
-          <select v-model="selectedTable" :disabled="loading || !selectedDatabase"><option v-for="table in tables" :key="table" :value="table">{{ table }}</option></select>
+        <label class="search-keyword">查询内容
+          <input v-model="keyword" :placeholder="searchField === 'amount' ? '例如：1288.50' : '输入关键字'" />
         </label>
-      </div>
+        <button type="submit" :disabled="loading">查询</button>
+        <button v-if="keyword" type="button" class="secondary" :disabled="loading" @click="keyword = ''; searchOrders()">清除</button>
+      </form>
 
-      <p class="query-context">当前查询：<strong>{{ selectedDatabase || '-' }}</strong> / <strong>{{ selectedTable || '-' }}</strong></p>
       <p v-if="error" class="error">{{ error }}</p>
-      <p v-else-if="loading" class="empty">查询中...</p>
-      <p v-else-if="selectedDatabase && tables.length === 0" class="empty">该数据库暂无数据表</p>
-      <p v-else-if="rows && rows.rows.length === 0" class="empty">该表暂无数据</p>
-      <div v-else-if="rows" class="table-wrap database-table-wrap">
-        <table>
-          <thead><tr><th v-for="column in visibleColumns" :key="column.source">{{ column.label }}</th></tr></thead>
-          <tbody><tr v-for="(row, index) in rows.rows" :key="index"><td v-for="column in visibleColumns" :key="column.source">{{ displayValue(row[column.source]) }}</td></tr></tbody>
-        </table>
+      <p v-else-if="loading && !orders" class="empty">查询中...</p>
+      <p v-else-if="orders && orders.rows.length === 0" class="empty">没有符合条件的订单数据</p>
+      <div v-else-if="orders" class="order-card-grid">
+        <article v-for="order in orders.rows" :key="`${order.order_id}-${order.order_date}-${order.customer_name}`" class="order-card">
+          <h2>{{ order.order_id }}</h2>
+          <img src="/order-card-image.png" alt="订单服务场景" />
+          <div class="order-card-body">
+            <p class="customer-name">{{ order.customer_name }}</p>
+            <div class="order-meta"><span>{{ displayAmount(order.amount) }}</span><time>{{ order.order_date }}</time></div>
+          </div>
+        </article>
+      </div>
+
+      <div v-if="orders && orders.total > 0" class="pagination">
+        <button type="button" class="secondary" :disabled="loading || page <= 1" @click="changePage(page - 1)">上一页</button>
+        <span>第 {{ page }} / {{ orders.total_pages }} 页，共 {{ orders.total }} 条</span>
+        <button type="button" class="secondary" :disabled="loading || page >= orders.total_pages" @click="changePage(page + 1)">下一页</button>
       </div>
     </section>
   </main>
